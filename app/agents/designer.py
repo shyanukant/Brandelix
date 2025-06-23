@@ -1,65 +1,30 @@
-"""from google.adk.agents import LlmAgent
-from google.adk.tools import agent_tool
-from app.agents.image_generator import ImageGeneratorAgent
+# app/agents/image_agent.py
 
-# Wrap ImageGenerator as a Tool
-ImageGenTool = agent_tool.AgentTool(agent=ImageGeneratorAgent(name="ImageGeneratorAgent"))
+from google.adk.agents import LlmAgent
+from google.adk.tools import FunctionTool
+from google import genai
+import os, base64
 
-# DesignerAgent uses this tool to trigger image generation
-DesignerAgent = LlmAgent(
-    name="DesignerAgent",
-    model="gemini-2.0-flash",
-    instruction=(
-        "Based on the post in 'edited_post' or 'base_post', "
-        "create an image_prompt and use the ImageGenTool to generate the image.\n"
-        "Only generate the image once using the tool.\n"
-        "Do not output a design brief — just generate the image.\n"
-    ),
-    tools=[ImageGenTool],
-    output_key="image"
-)
-"""
-import os
-import vertexai
-from vertexai.preview.vision_models import ImageGenerationModel
-from google.adk.agents import BaseAgent
-from google.adk.events import Event
-from google.genai import types
-from google.oauth2 import service_account
-
-from dotenv import load_dotenv
-load_dotenv()
-
-cred = service_account.Credentials.from_service_account_file(
-    os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "path/to/your/service-account.json")
-)
-# Initialize Vertex AI once at startup
-vertexai.init(
+client_image = genai.Client(
+    vertexai=True,
     project=os.getenv("GCP_PROJECT_ID"),
-    location=os.getenv("GCP_LOCATION"),
-    credentials=cred
+    location=os.getenv("GCP_LOCATION")
 )
 
-class DesignerAgent(BaseAgent):
-    async def _run_async_impl(self, ctx):
-        prompt = ctx.session.state.get("base_post")
-        platform = ctx.session.state.get("current_platform", "default")
-        if not prompt:
-            # yield Event.is_final_response(content="⚠️ No image_prompt found in session state.")
-            print("No image_prompt found in session state.")
-            return
+def generate_image(prompt: str) -> dict:
+    resp = client_image.models.generate_image(
+        model="imagen-4.0-ultra-generate-preview-06-06",
+        prompt=prompt, number_of_images=1, aspect_ratio="1:1"
+    )
+    img_bytes = resp.images[0]._image_bytes
+    return {"image_b64": base64.b64encode(img_bytes).decode()}
 
-        # Generate image with Vertex Imagen 3.0
-        model = ImageGenerationModel.from_pretrained("imagen-4.0-ultra-generate-preview-06-06")
-        response = model.generate_images(prompt=prompt, number_of_images=1, aspect_ratio="1:1")
-        img = response[0]
+image_tool = FunctionTool(func=generate_image)
 
-        # Save the image locally
-        os.makedirs("generated_images", exist_ok=True)
-        filename = f"generated_images/{platform}.png"
-        img.save(location=filename)
-
-        ctx.session.state[f"image_path_{platform}"] = filename
-        # yield Event.is_final_response(content=f"🖼️ Image saved at `{filename}`.")
-        print(Event)
-
+ImageAgent = LlmAgent(
+    name="ImageAgent",
+    model="gemini-2.0-flash",
+    tools=[image_tool],
+    instruction="Use the `generate_image` tool on the prompt in 'design_prompt' state.",
+    output_key="image_b64"
+)
